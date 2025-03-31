@@ -1,0 +1,102 @@
+#Setup and read-in data ------
+
+library(tidyverse)
+library(lubridate)
+library(RMySQL)
+library(utils)
+
+PlanningYear=2024
+DateStart=(paste0(PlanningYear-1,"-12-01")) #to constrain candidates to this year
+DateEnd=(paste0(PlanningYear,"-03-01")) #same as above
+
+# Resight data from database ------
+
+getMySQLTable=function(db='elephantseal',tbl='resight') #function to read a database table
+{
+  #open the connection
+  conn=dbConnect(MySQL(),user="root",password="",dbname=db)
+  #guarantees that it disconnects whatever happens when you exit R
+  on.exit(dbDisconnect(conn))
+  
+  fullqry=paste0("SELECT * FROM ", db, ".", tbl)
+  #send query that will return results as R dataframe
+  full=suppressWarnings(dbGetQuery(conn,fullqry))
+  return(full)
+}
+
+#extract resight observation data
+ResightData=getMySQLTable(db='elephantseal',tbl='resight') %>% 
+  filter(season==PlanningYear, 
+         #eventually replace with >=PlanningYear-10; only last 10 years of resight data
+         regionID<=5) %>% #only sightings at ANNU or ANNI
+  mutate(date = as.Date(date)) #format columns
+
+#extract animal data
+AnimalData=getMySQLTable(db='elephantseal',tbl='viewfullanimalrecord') %>% 
+  mutate(tagdate = as.Date(tagdate),
+         tagperiod = as.numeric(tagperiod)) %>%  #format columns
+  filter(Nfemale>Nmale) %>%  # filter animals where # sightings as females > # male
+  mutate(AgeYears = ifelse(broad == "YOY", #Calculate numerical age IF the animal was tagged as Young of Year (YOY) 
+                           round(PlanningYear-tagperiod), 
+                           NA)) %>%  #otherwise age is NA
+  filter(AgeYears>2) #filter out the juveniles
+
+#extract pup observations
+BreedingData=getMySQLTable(db = "elephantseal", tbl = "pupobs") %>% 
+  dplyr::select("resightID","withpup")
+
+#add pup observation data to resight data
+BreedingResights=left_join(ResightData, BreedingData, by = "resightID") %>% 
+  filter(!is.na(withpup), #constrain to animals with pup info
+         regionID <= 5) #keep only observations at ANNU & ANNI
+
+#subset resights to the important dates and seals
+AnimalsSeenThisSeason=ResightData %>% 
+  filter(date>DateStart,
+         date<DateEnd) %>% 
+  group_by(animalID) %>% #for each seal
+  summarize(FirstSighting=first(date), #calculate first sighting date
+            LastSighting=last(date)) %>%  #calculate the last sighting data
+  left_join(AnimalData[,c("animalID","AgeYears")],by="animalID")
+  
+BreedingResights=BreedingResights %>% 
+  filter(animalID %in% AnimalsSeenThisSeason$animalID)
+write.csv(BreedingResights,"Aditi 2024 Data Pull 2025_02_03_RAW.csv",row.names=FALSE)
+
+# Summarize birth date for this season ------
+ThisYrBreedingHistory = BreedingResights %>% 
+  filter(withpup >= 1) %>% #only resights with at least one pup
+  filter(season == PlanningYear) %>% #for this year only
+  group_by(animalID) %>% 
+  summarise(BirthDate=min(date)) #first date with a pup
+
+# Summarize last date without a pup, to calculate pup precision ------
+ThisYrPreBreedingHistory <- BreedingResights %>% 
+  dplyr::select(date, season, withpup, animalID) %>% 
+  filter(season == PlanningYear,  # Ensure season matches the current year
+         withpup == 0,  # Without a pup
+         as.Date(date) > as.Date(DateStart),  # Ensure date comparisons work
+         as.Date(date) < as.Date(DateEnd)) %>%  # Keep within the breeding season
+  group_by(animalID) %>% 
+  summarize(LastWOPup = max(as.Date(date)), .groups = "drop") %>%  # Keep the latest date without pup
+  left_join(ThisYrBreedingHistory, by = "animalID") %>%  # Add in pupping date
+  mutate(BirthDate = as.Date(BirthDate)) %>%  # Ensure BirthDate is a Date object
+  filter(!is.na(BirthDate) & LastWOPup < BirthDate) %>%  # Keep only valid records
+  mutate(Precision = as.numeric(BirthDate - LastWOPup))  # Convert to numeric difference
+
+# Calculate a metric for each seal ------
+
+CandidateBreeding = AnimalsSeenThisSeason %>%
+  dplyr::select("animalID","AgeYears") %>%  #only a few columns
+  filter(AgeYears>=3) %>% #only animals of unknown age or age>3
+  filter(animalID %in% AnimalsSeenThisSeason$animalID) %>%  #only animals that have been seen this breeding season
+  left_join(ThisYrBreedingHistory, by = "animalID") %>% #add birth date
+  left_join(ThisYrPreBreedingHistory %>% 
+              dplyr::select(animalID,Precision), by = "animalID") %>% #add birth date precision
+  arrange(BirthDate) # for fun
+
+head(CandidateBreeding)
+
+setwd("C:/Users/roxan/Documents/Collaborations/Aditi Jacob")
+write.csv(CandidateBreeding,"Aditi 2024 Data Pull 2025_02_11_SUMMARIZED.csv",row.names=FALSE)
+

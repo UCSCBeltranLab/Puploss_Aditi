@@ -1,0 +1,173 @@
+library(tidyverse)
+library(lubridate)
+library(RMySQL)
+library(utils)
+library(dplyr)
+library(ggplot2)
+
+#read both csvs!
+read.csv("Aditi 2024 Data Pull 2025_02_03_RAW.csv")
+read.csv("Aditi 2024 Data Pull 2025_02_11_SUMMARIZED.csv")
+
+#arrange the raw data by animal ID
+Table1 = Aditi_2024_Data_Pull_2025_02_03_RAW %>%
+  arrange(animalID)
+print(Table1)
+
+#filter the summarized data for moms w/ pup birthdate only
+ResightTable0 = Aditi_2024_Data_Pull_2025_02_03_SUMMARIZED %>%
+  left_join(Table1, by = "animalID") %>%
+  filter(!is.na(BirthDate)) %>%
+  filter(as.Date(date) >= as.Date(BirthDate)) #all dates should be after birth date
+
+#Make mini table with number of days resighted by animalID
+TotalResightTable = ResightTable0 %>%
+  group_by(animalID) %>%
+  summarize(total_resights = n())
+
+#Histogram of days resighted on the beach
+ggplot(data = TotalResightTable, aes(x = total_resights))+
+  geom_histogram(binwidth = 0.5, fill = "lightpink")+
+  labs(title = "Histogram of Days Resighted", x = "Days Resighted", y = "Frequency")+
+  theme_bw()
+
+#Filter the big resight table- moms w/ greater than 8 resights
+ResightTable = TotalResightTable %>%
+  left_join(ResightTable0, by = "animalID") %>%
+  filter(total_resights >= 15) 
+
+#Count 0 pups in record for each mom
+Count_1_pups = ResightTable %>%
+  filter(withpup == 1) %>%
+  group_by(animalID) %>%
+  summarize(count_1_pups = n()) %>%
+  left_join(TotalResightTable, by = "animalID")
+
+#Calculate proportional pup loss (0s out of total resights)
+Proportion_PupSuccess = Count_1_pups %>%
+  group_by(animalID) %>%
+  summarize(proportionsuccess = count_1_pups/total_resights)
+
+#Make a histogram for proportional pup loss 
+ggplot(data = Proportion_PupSuccess, aes(x = proportionsuccess)) +
+  geom_histogram(binwidth = 0.006, fill = "lightpink") +
+  labs(title = "Histogram of proportion 1 pup", x = "Proportion 1 Pup", y = "Frequency") +
+  theme_bw()
+
+#Update Resight Table w/ counts and proportion of 0 pups
+ResightTable <- ResightTable %>%
+  left_join(Count_0_pups, by = "animalID") %>%
+  left_join(Proportion_PupLoss, by = "animalID")
+
+#Function for counting 3 consecutive 0s
+count_15_ones <- function(x) {
+  rle_x <- rle(x)
+  sum(rle_x$values == 1 & rle_x$length == 15)
+}
+
+#Count number of 3 consecutive 0s for each mom in the resight table
+Consecutive_1_15 <- ResightTable %>%
+  group_by(animalID) %>%
+  summarise(consecutive_15_ones_count = count_15_ones(withpup))
+
+#Function for counting 2 consecutive 0s
+count_two_zeros <- function(x) {
+  rle_x <- rle(x)
+  sum(rle_x$values == 0 & rle_x$length == 2)
+}
+
+#Count the number of 2 consecutive 0s for each mom
+Consecutive_0_2 <- ResightTable %>%
+  group_by(animalID) %>%
+  summarise(consecutive_2_zeros_count = count_two_zeros(withpup)) %>%
+  filter(consecutive_2_zeros_count > 0)
+
+#Histogram for the number of 3 consecutive 0s
+ggplot(data = Consecutive_0_3, aes(x = consecutive_3_zeros_count))+
+  geom_histogram(binwidth = 0.5, fill = "lightpink")+
+  labs(title = "", x = "three consecutive zeros", y = "Frequency")+
+  theme_bw()
+
+#Histogram for the number of 2 consecutive 0s
+ggplot(data = Consecutive_0_2, aes(x = consecutive_2_zeros_count))+
+  geom_histogram(binwidth = 0.5, fill = "lightpink")+
+  labs(title = "", x = "two consecutive zeros", y = "Frequency")+
+  theme_bw()
+
+#Harem density calculation for AP
+female_counts_AP <- Table1 %>%
+  filter(area == "AP") %>%
+  group_by(date) %>%
+  summarize(count_females_AP = n())
+
+ggplot(data = female_counts_AP, aes(x = date, y = count_females_AP))+
+  geom_bar(stat = "identity", position = "dodge")+
+  labs(title = "Female seals resighted by date at AP", x = "date", y = "count")+
+  theme_bw()
+
+#Harem density calculation for NP
+female_counts_APG <- Table1 %>%
+  filter(area == "APG") %>%
+  group_by(date) %>%
+  summarize(count_females_AP = n())
+
+ggplot(data = female_counts_APG, aes(x = date, y = count_females_AP))+
+  geom_bar(stat = "identity", position = "dodge")+
+  labs(title = "Female seals resighted by date at APG", x = "date", y = "count")+
+  theme_bw()
+
+# Function to find the first date of consecutive 0s
+find_first_consecutive_zero_date <- function(x, dates) {
+  rle_x <- rle(x)  # Run-length encoding
+  indices <- which(rle_x$values == 0 & rle_x$length == 2)  # Find where consecutive zeros occur
+  
+  if(length(indices) > 0) {
+    # Get the first index of consecutive zeros
+    first_index <- sum(rle_x$length[1:(indices[1] - 1)]) + 1
+    return(dates[first_index])  # Return the corresponding date
+  }
+  return(NA)  # Return NA if no consecutive zeros found
+}
+
+#Find the first date of 2 consecutive 0s for each animalID
+Consecutive_0_2_withdate <- ResightTable %>%
+  group_by(animalID) %>%
+  summarise(first_consecutive_0_date = find_first_consecutive_zero_date(withpup, date)) %>%
+  filter(!is.na(first_consecutive_0_date)) %>%
+  left_join(Consecutive_0_2, by = "animalID")
+
+#HAREMS
+## Harem density chart and pup loss first date (from consecutive 0s)
+## What counts as a harem?? Many locations, should we group some?
+## Harem density = number of females/area, so we need area of each harem
+## Help with calculating the harem location for each female (where she was seen the most vs. where she lost pup)
+
+#THINGS TO TALK AB w/ MADDIE
+# Comparing whether proportional moms = sequential moms
+# I filtered moms w/ >0.25 proportion pup loss and only >1 consecutive 0s. 
+# This gives 13 total potential cases of pup loss (5 animals are the same between proportional and consecutive)
+
+##NOTES on potential moms from consecutive 2 ONLY
+#40870- second 0 was 6 days later, unsure if this counts
+#47123- procedure mom, has 2 sets of consecutive 0s with 1s in between. Mostly sure she lost pup
+#48244- looks more like adoption, or her pup was an orphan for a while
+#49594- just 2 0s very early on, a day post birth. Rest of record has consistent resights with 1 pup
+#49965- doesn't count bc it was just one day with double resight
+#51555- maybe but looks like only 2 0s and they were reunited
+#51983- DEFINITELY, 4 consecutive 0s and she looked like she was not interacting w/ the pup
+#53056- DEFINITELY, 5 consecutive 0s and she may have adopted
+
+#NEED TO FIX
+#Looked through the loc chart, and consecutive 0s were counted even if between missed resight days
+#Also double resight days are skewing consecutive 0s (how should i get rid of double days)
+
+
+
+
+
+
+
+
+
+         
+

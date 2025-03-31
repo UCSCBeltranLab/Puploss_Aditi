@@ -1,0 +1,65 @@
+library(tidyverse)
+library(lubridate)
+library(RMySQL)
+library(utils)
+library(dplyr)
+library(ggplot2)
+
+
+#read both csvs!
+read.csv("Aditi 2024 Data Pull 2025_02_03_RAW.csv")
+read.csv("Aditi 2024 Data Pull 2025_02_11_SUMMARIZED.csv")
+
+#arrange the raw data by animal ID
+Table1 = Aditi_2024_Data_Pull_2025_02_03_RAW %>%
+  arrange(animalID)
+print(Table1)
+
+#filter the summarized data for moms w/ pup birthdate only
+ResightTable0 = Aditi_2024_Data_Pull_2025_02_11_SUMMARIZED %>%
+  left_join(Table1, by = "animalID") %>%
+  filter(!is.na(BirthDate))
+
+#Make mini table with number of days resighted by animalID
+TotalResightTable = ResightTable0 %>%
+  group_by(animalID) %>%
+  filter(as.Date(date) >= as.Date(BirthDate)) %>%
+  summarize(total_resights = n())
+
+#Histogram of days resighted on the beach
+ggplot(data = TotalResightTable, aes(x = total_resights))+
+  geom_histogram(binwidth = 0.5, fill = "lightpink")+
+  labs(title = "Histogram of Days Resighted", x = "Days Resighted", y = "Frequency")+
+  theme_bw()
+
+#Filter the big resight table- moms w/ greater than 15 resights
+ResightTable = TotalResightTable %>%
+  left_join(ResightTable0, by = "animalID") %>%
+  filter(total_resights >= 15) 
+
+#Count 1 pups in record for each mom
+Count_1_pups = ResightTable %>%
+  filter(withpup == 1) %>%
+  group_by(animalID) %>%
+  summarize(count_1_pup = n()) %>%
+  left_join(TotalResightTable, by = "animalID")
+
+#Calculate proportional pup success (1s out of total resights)
+Proportion_PupSuccess = Count_1_pups %>%
+  group_by(animalID) %>%
+  summarize(proportionsuccess = count_1_pup/total_resights)
+
+#Make a histogram for proportional pupping success 
+ggplot(data = Proportion_PupSuccess, aes(x = proportionsuccess)) +
+  geom_histogram(binwidth = 0.006, fill = "lightpink") +
+  labs(title = "Histogram of proportion 1 pup", x = "Proportion 1 Pup", y = "Frequency") +
+  theme_bw()
+
+#Calculate arrival date
+ArrivalDate = ResightTable %>%
+  group_by(animalID) %>%
+  summarize(ArrivalDate = first(as.Date(date))) 
+  
+
+
+
